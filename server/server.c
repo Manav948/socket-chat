@@ -5,51 +5,67 @@
 #include <string.h>
 
 #ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
-    typedef int socklen_t;
-    #define close_socket closesocket
-#else 
-    #include <unistd.h>
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    typedef int SOCKET;
-    #define INVALID_SOCKET -1
-    #define SOCKET_ERROR -1
-    #define close_socket close
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef int socklen_t;
+#define close_socket closesocket
+#else
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+typedef int SOCKET;
+#define INVALID_SOCKET -1
+#define SOCKET_ERROR -1
+#define close_socket close
 #endif
 
 #define port 8080
 #define backlog 5
 #define buffer_size 1024
+#define max_client 30
 
-int main (void) {
-    #ifdef _WIN32
+int main(void)
+{
+#ifdef _WIN32
     WSADATA wsaData;
-    if(WSAStartup(MAKEWORD(2,2), &wsaData) != 0){
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
         printf("Failed to initialize winsock. \n");
         return 1;
     }
-    #endif
+#endif
+
+    // track active client
+    SOCKET client_sockets[max_client];
+    for (int i = 0; i < max_client; i++)
+    {
+        client_sockets[i] = 0;
+    }
 
     // create listening socket
     SOCKET server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(server_fd == INVALID_SOCKET) {
+    if (server_fd == INVALID_SOCKET)
+    {
         perror("Socket create failed");
         return 1;
     }
+
+    // re-ues socket for multiple client connection
+    int op = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&op, sizeof(op));
     printf("Socket created successfully (FD: %d)\n", (int)server_fd);
-    
+
     // bind socket to ip and port
     struct sockaddr_in server_addr;
-    memset(&server_addr , 0 ,sizeof(server_addr));
+    memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(port);
 
-    if(bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR){
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR)
+    {
         perror("Bind failed");
         close_socket(server_fd);
         return 1;
@@ -57,7 +73,8 @@ int main (void) {
     printf("Socket bound to port %d\n", port);
 
     // listen for incoming connection
-    if(listen(server_fd , backlog) == SOCKET_ERROR){
+    if (listen(server_fd, backlog) == SOCKET_ERROR)
+    {
         perror("Listen failed");
         close_socket(server_fd);
         return 1;
@@ -65,51 +82,108 @@ int main (void) {
     printf("Server is listening for incoming connections on port %d (backlog: %d)...\n", port, backlog);
 
     // accept connection
-    struct sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-
-    SOCKET client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
-    if(client_fd == INVALID_SOCKET ){
-        perror("Accpect failed");
-        close_socket(server_fd);
-        return 1;
-    }
-
-    char* client_ip = inet_ntoa(client_addr.sin_addr);
-    printf("Client connected! IP: %s, Port: %d (Client FD: %d)\n", client_ip, ntohs(client_addr.sin_port), (int)client_fd);
-
+    fd_set readfds;
     char buffer[buffer_size];
-    int bytes_received = recv(client_fd, buffer , sizeof(buffer) -1 , 0);
-    
-    // check 
-    if (bytes_received > 0) {
-        buffer[bytes_received] = '\0';
-        printf("[SERVER] Received from client: \"%s\" (%d bytes)\n", buffer, bytes_received);
 
-        const char* server_reply = "Hello client, message received successfully!";
-        int bytes_sent = send(client_fd, server_reply, (int)strlen(server_reply), 0);
+    while (1)
+    {
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+        SOCKET max_fd = server_fd;
 
-        if (bytes_sent == SOCKET_ERROR) {
-            perror("Send failed");
-        } else {
-            printf("[SERVER] Sent reply to client (%d bytes)\n", bytes_sent);
+        for (int i = 0; i < max_client; i++)
+        {
+            SOCKET sd = client_sockets[i];
+            if (sd > 0)
+            {
+                FD_SET(sd, &readfds);
+            }
+            if (sd > max_fd)
+            {
+                max_fd = sd;
+            }
         }
-    } else if (bytes_received == 0) {
-        printf("[SERVER] Client disconnected before sending data.\n");
-    } else {
-        perror("recv failed");
-    }
+        // Wait for activity on one of the sockets
+        int activity = select((int)(max_fd + 1), &readfds, NULL, NULL, NULL);
+        if (activity < 0)
+        {
+            perror("select error");
+            break;
+        }
 
+        //  Incoming New Connection on Listening Socket
+
+        if (FD_ISSET(server_fd, &readfds))
+        {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            SOCKET new_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+            if (new_socket != INVALID_SOCKET)
+            {
+                char *client_ip = inet_ntoa(client_addr.sin_addr);
+                printf("[SERVER] New connection! IP: %s, Port: %d (Socket FD: %d)\n", client_ip,
+                       ntohs(client_addr.sin_port), (int)new_socket);
+
+                const char *welcomeMessage = "Welcome to the server!";
+                send(new_socket, welcomeMessage, (int)strlen(welcomeMessage), 0);
+
+                // add new socket into array of sockets
+                int added = 0;
+                for (int i = 0; i < max_client; i++)
+                {
+                    if (client_sockets[i] == 0)
+                    {
+                        client_sockets[i] = new_socket;
+                        added = 1;
+                        printf("[SERVER] Added client to slot %d\n", i);
+                        break;
+                    }
+                }
+                if (!added)
+                {
+                    printf("[SERVER] Server full! Rejecting client.\n");
+                    close_socket(new_socket);
+                }
+            }
+        }
+        // IO operation on some other socket
+        for(int i = 0; i < max_client ; i++) {
+            SOCKET sd = client_sockets[i];
+            if(sd > 0 && FD_ISSET(sd, &readfds)) {
+                int bytes_received = recv(sd, buffer, sizeof(buffer) - 1, 0);
+                
+                if(bytes_received > 0) {
+                    buffer[bytes_received] = '\0';
+                     printf("[CLIENT FD %d]: %s", (int)sd, buffer);
+
+                    char replay[buffer_size];
+                    snprintf(replay, sizeof(replay), "Server received: %s", buffer);
+                    send(sd, replay, (int)strlen(replay), 0);
+                }else if(bytes_received == 0) {
+                    //  client dis-connected
+                    struct sockaddr_in client_addr;
+                    socklen_t client_len = sizeof(client_addr);
+                    getpeername(sd, (struct sockaddr *)&client_addr, &client_len);
+                    printf("[SERVER] Client disconnected! IP: %s, Port: %d (Socket FD: %d)\n", inet_ntoa(client_addr.sin_addr),
+                           ntohs(client_addr.sin_port), (int)sd);
+                    close_socket(sd);
+                    client_sockets[i] = 0;
+                }else {
+                    perror("recv failed");
+                    close_socket(sd);
+                    client_sockets[i] = 0;
+                }
+            }
+        }
+    }
     // close connection
     printf("Closing the connection\n");
-    close_socket(client_fd);
+    close_socket(server_fd);
     close_socket(server_fd);
 
-    #ifdef _WIN32
+#ifdef _WIN32
     WSACleanup();
-    #endif
+#endif
 
     return 0;
-
- }
-       
+}

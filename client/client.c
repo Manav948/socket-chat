@@ -31,7 +31,7 @@ int main(void) {
         return 1;
     }
     #endif
-
+    //  create socket
     SOCKET sock_fd = socket(AF_INET, SOCK_STREAM , 0);
     if(sock_fd == INVALID_SOCKET) {
         perror("socket creation failed");
@@ -46,6 +46,7 @@ int main(void) {
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = inet_addr(server_ip);
+
     if (server_addr.sin_addr.s_addr == INADDR_NONE) {
         printf("[CLIENT] Invalid IP address / Address not supported\n");
         close_socket(sock_fd);
@@ -60,16 +61,6 @@ int main(void) {
         return 1;
     }
     printf("[CLIENT] Successfully connected to server!\n");
-    
-    const char* message = "Hello server, this is Manav!";
-    int bytes_sent = send(sock_fd, message, (int)strlen(message), 0);
-
-    // send message to server
-    if (bytes_sent == SOCKET_ERROR) {
-        perror("Send failed");
-    } else {
-        printf("[CLIENT] Sent message to server (%d bytes): \"%s\"\n", bytes_sent, message);
-    }
 
     // receive response from server
     char buffer[BUFFER_SIZE];
@@ -78,10 +69,35 @@ int main(void) {
     if (bytes_received > 0) {
         buffer[bytes_received] = '\0';
         printf("[CLIENT] Received reply from server: \"%s\" (%d bytes)\n", buffer, bytes_received);
-    } else if (bytes_received == 0) {
-        printf("[CLIENT] Server closed connection.\n");
-    } else {
-        perror("Receive failed");
+    }
+    // iterative loop for multiple clints
+    while(1) {
+        printf("You >");
+        if(fgets(buffer, sizeof(buffer), stdin) == NULL) {
+            break;
+        }
+        // check for disconnect command
+        if(strncmp(buffer, "/quit", 5) == 0) {
+            printf("[CLIENT] DisConnect...\n");
+            break;
+        }
+        int bytes_sent = send(sock_fd, buffer, strlen(buffer), 0);
+        if(bytes_sent == SOCKET_ERROR) {
+            perror("send failed");
+            break;
+        }
+        bytes_received = recv(sock_fd, buffer, sizeof(buffer) - 1 , 0);
+
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+            printf("[CLIENT] Received reply from server: \"%s\" (%d bytes)\n", buffer, bytes_received);
+        } else if (bytes_received == 0) {
+            printf("[CLIENT] Server closed the connection\n");
+            break;
+        } else {
+            perror("recv failed");
+            break;
+        }
     }
     
 
