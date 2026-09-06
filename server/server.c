@@ -61,6 +61,18 @@ int userNameTaken(const char *username)
     return 0;
 }
 
+SOCKET findClientByUsername(const char *username)
+{
+    for (int i = 0; i < max_client; i++)
+    {
+        if (clients[i].is_registered && stricmp(clients[i].username, username) == 0)
+        {
+            return clients[i].socket_fd;
+        }
+    }
+    return INVALID_SOCKET;
+}
+
 // Helper: Broadcast a message to all registered clients except sender (if sender_fd != 0)
 void broadcast_message(const char *msg, SOCKET sender_fd)
 {
@@ -126,10 +138,9 @@ int main(void)
         close_socket(server_fd);
         return 1;
     }
- 
+
     printf("   REAL-TIME TCP CHAT SERVER RUNNING (PORT: %d)\n", port);
     printf("   Max Capacity: %d clients | Backlog: %d\n", max_client, backlog);
-
 
     fd_set readfds;
     char buffer[buffer_size];
@@ -247,12 +258,47 @@ int main(void)
                     // Chat Broadcast Phase
                     else
                     {
-                        printf("[CHAT] %s (FD %d): %s\n", clients[i].username, (int)sd, buffer);
+                        if (strncmp(buffer, "/msg ", 5) == 0 || strncmp(buffer, "/msg", 4) == 0)
+                        {
+                            char targetUser[username_len];
+                            char privateMsg[buffer_size];
+                            if (sscanf(buffer, "/msg %31s %[^\n]", targetUser, privateMsg) == 2)
+                            {
+                                SOCKET target_fd = findClientByUsername(targetUser);
+                                if (target_fd != INVALID_SOCKET)
+                                {
+                                    printf("[PRIVATE] %s -> %s: %s\n", clients[i].username, targetUser, privateMsg);
+                                    char toTarget[buffer_size];
+                                    snprintf(toTarget, sizeof(toTarget), "[PRIVATE] %s: %s\n", clients[i].username, privateMsg);
+                                    send(target_fd, toTarget, (int)strlen(toTarget), 0);
 
-                        // Broadcast chat message to ALL OTHER clients!
-                        char broadcast_msg[buffer_size];
-                        snprintf(broadcast_msg, sizeof(broadcast_msg), "[%s]: %s\n", clients[i].username, buffer);
-                        broadcast_message(broadcast_msg, sd);
+                                    // Confirmation to sender
+                                    char toSender[buffer_size];
+                                    snprintf(toSender, sizeof(toSender), "[PRIVATE] To %s: %s\n", targetUser, privateMsg);
+                                    send(sd, toSender, (int)strlen(toSender), 0);
+                                }
+                                else
+                                {
+                                    char errMsg[buffer_size];
+                                    snprintf(errMsg, sizeof(errMsg), "[SERVER] User '%s' not found or not online.\n", targetUser);
+                                    send(sd, errMsg, (int)strlen(errMsg), 0);
+                                }
+                            }
+                            else
+                            {
+                                const char *err = "[SERVER] Invalid private message format. Use: /msg <username> <message>\n";
+                                send(sd, err, (int)strlen(err), 0);
+                            }
+                        }
+                        else
+                        {
+                            printf("[CHAT] %s (FD %d): %s\n", clients[i].username, (int)sd, buffer);
+
+                            // Broadcast chat message to ALL OTHER clients!
+                            char broadcast_msg[buffer_size];
+                            snprintf(broadcast_msg, sizeof(broadcast_msg), "[%s]: %s\n", clients[i].username, buffer);
+                            broadcast_message(broadcast_msg, sd);
+                        }
                     }
                 }
                 else
