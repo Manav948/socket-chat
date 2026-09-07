@@ -25,13 +25,16 @@ typedef int SOCKET;
 #define backlog 10
 #define buffer_size 1024
 #define max_client 30
+#define room_len 32
 #define username_len 32
+#define DEFAULT_ROOM "general"
 
 // Define structure to hold client information
 typedef struct
 {
     SOCKET socket_fd;
     char username[username_len];
+    char room[room_len];
     int is_registered;
 } Client;
 
@@ -61,6 +64,7 @@ int userNameTaken(const char *username)
     return 0;
 }
 
+// Find socket descriptor by username
 SOCKET findClientByUsername(const char *username)
 {
     for (int i = 0; i < max_client; i++)
@@ -73,7 +77,61 @@ SOCKET findClientByUsername(const char *username)
     return INVALID_SOCKET;
 }
 
-// Helper: Broadcast a message to all registered clients except sender (if sender_fd != 0)
+// Broadcast message ONLY to clients in the same room
+void broadcastToRoom(const char *msg, const char *roomName, SOCKET sender_fd)
+{
+    for (int i = 0; i < max_client; i++)
+    {
+        if (clients[i].is_registered &&
+            clients[i].socket_fd > 0 &&
+            clients[i].socket_fd != sender_fd &&
+            stricmp(clients[i].room, roomName) == 0)
+        {
+            send(clients[i].socket_fd, msg, (int)strlen(msg), 0);
+        }
+    }
+}
+
+// List active rooms
+void listRoom(SOCKET sd)
+{
+    char response[buffer_size];
+    snprintf(response, sizeof(response), "\n ACTIVE CHAT ROOMS \n");
+    send(sd, response, (int)strlen(response), 0);
+
+    for (int i = 0; i < max_client; i++)
+    {
+        if (clients[i].is_registered)
+        {
+            int printed = 0;
+            for (int j = 0; j < i; j++)
+            {
+                if (clients[j].is_registered && stricmp(clients[j].room, clients[i].room) == 0)
+                {
+                    printed = 1;
+                    break;
+                }
+            }
+            if (!printed)
+            {
+                int count = 0;
+                for (int k = 0; k < max_client; k++)
+                {
+                    if (clients[k].is_registered && stricmp(clients[k].room, clients[i].room) == 0)
+                    {
+                        count++;
+                    }
+                }
+                snprintf(response, sizeof(response), " - #%s (%d users online)\n", clients[i].room, count);
+                send(sd, response, (int)strlen(response), 0);
+            }
+        }
+    }
+    const char *footer = "========================================\n\n";
+    send(sd, footer, (int)strlen(footer), 0);
+}
+
+// Broadcast message to all registered clients except sender
 void broadcast_message(const char *msg, SOCKET sender_fd)
 {
     for (int i = 0; i < max_client; i++)
@@ -101,6 +159,7 @@ int main(void)
     {
         clients[i].socket_fd = 0;
         clients[i].username[0] = '\0';
+        strcpy(clients[i].room, DEFAULT_ROOM);
         clients[i].is_registered = 0;
     }
 
@@ -187,13 +246,14 @@ int main(void)
                         clients[i].socket_fd = new_socket;
                         clients[i].is_registered = 0;
                         clients[i].username[0] = '\0';
+                        strcpy(clients[i].room, DEFAULT_ROOM);
                         added = 1;
 
                         char *client_ip = inet_ntoa(client_addr.sin_addr);
-                        printf("[CONNECT] New connection from %s:%d (Socket FD: %d)\n",
+                        printf("New connection from %s:%d (Socket FD: %d)\n",
                                client_ip, ntohs(client_addr.sin_port), (int)new_socket);
 
-                        const char *welcomeMessage = "[SERVER] Welcome! Please enter your username: ";
+                        const char *welcomeMessage = "Welcome! Please enter your username: ";
                         send(new_socket, welcomeMessage, (int)strlen(welcomeMessage), 0);
                         break;
                     }
@@ -208,7 +268,7 @@ int main(void)
             }
         }
 
-        //  I/O Activity on Client Sockets
+        // I/O Activity on Client Sockets
         for (int i = 0; i < max_client; i++)
         {
             SOCKET sd = clients[i].socket_fd;
@@ -240,25 +300,93 @@ int main(void)
                             clients[i].username[username_len - 1] = '\0';
                             clients[i].is_registered = 1;
 
-                            printf("[REGISTER] FD %d registered as '%s'\n", (int)sd, clients[i].username);
+                            printf("[REGISTER] FD %d registered as '%s' (Room: #%s)\n",
+                                   (int)sd, clients[i].username, clients[i].room);
 
-                            // Send confirmation to registered user
                             char welcome_msg[buffer_size];
                             snprintf(welcome_msg, sizeof(welcome_msg),
-                                     "[SERVER] Welcome, %s! Type your message and hit Enter.\n", clients[i].username);
+                                     "Welcome %s! You are in room '#%s'. Commands: /join <room>, /rooms, /msg <user> <msg>\n",
+                                     clients[i].username, clients[i].room);
                             send(sd, welcome_msg, (int)strlen(welcome_msg), 0);
 
-                            // Broadcast join notification to all OTHER connected users!
                             char join_notification[buffer_size];
                             snprintf(join_notification, sizeof(join_notification),
-                                     "[SERVER] *** %s joined the chat! ***\n", clients[i].username);
-                            broadcast_message(join_notification, sd);
+                                     "[SERVER] *** %s joined room '#%s'! ***\n", clients[i].username, clients[i].room);
+                            broadcastToRoom(join_notification, clients[i].room, sd);
                         }
                     }
-                    // Chat Broadcast Phase
+                    // Chat & Commands Phase
                     else
                     {
-                        if (strncmp(buffer, "/msg ", 5) == 0 || strncmp(buffer, "/msg", 4) == 0)
+                        // COMMAND 1: Join Room (/join <room>)
+                        if (strncmp(buffer, "/join ", 6) == 0)
+                        {
+                            char newRoom[room_len];
+                            if (sscanf(buffer, "/join %31s", newRoom) == 1)
+                            {
+                                if (stricmp(clients[i].room, newRoom) == 0)
+                                {
+                                    char err[buffer_size];
+                                    snprintf(err, sizeof(err), "[SERVER] You are already in room '#%s'.\n", newRoom);
+                                    send(sd, err, (int)strlen(err), 0);
+                                }
+                                else
+                                {
+                                    // Notify old room
+                                    char leaveOld[buffer_size];
+                                    snprintf(leaveOld, sizeof(leaveOld), "[SERVER] *** %s left room '#%s' ***\n",
+                                             clients[i].username, clients[i].room);
+                                    broadcastToRoom(leaveOld, clients[i].room, sd);
+
+                                    // Switch room
+                                    strncpy(clients[i].room, newRoom, room_len - 1);
+                                    clients[i].room[room_len - 1] = '\0';
+                                    printf("[ROOM SWITCH] %s moved to room '#%s'\n", clients[i].username, clients[i].room);
+
+                                    // Confirm to user
+                                    char confirm[buffer_size];
+                                    snprintf(confirm, sizeof(confirm), "[SERVER] Switched to room '#%s'.\n", clients[i].room);
+                                    send(sd, confirm, (int)strlen(confirm), 0);
+
+                                    // Notify new room
+                                    char joinNew[buffer_size];
+                                    snprintf(joinNew, sizeof(joinNew), "[SERVER] *** %s joined room '#%s'! ***\n",
+                                             clients[i].username, clients[i].room);
+                                    broadcastToRoom(joinNew, clients[i].room, sd);
+                                }
+                            }
+                        }
+
+                        else if (strcmp(buffer, "/leave") == 0)
+                        {
+                            if (stricmp(clients[i].room, DEFAULT_ROOM) == 0)
+                            {
+                                const char *msg = "[SERVER] You are already in default room '#general'.\n";
+                                send(sd, msg, (int)strlen(msg), 0);
+                            }
+                            else
+                            {
+                                char leaveOld[buffer_size];
+                                snprintf(leaveOld, sizeof(leaveOld), "[SERVER] %s left room '#%s'\n",
+                                         clients[i].username, clients[i].room);
+                                broadcastToRoom(leaveOld, clients[i].room, sd);
+
+                                strcpy(clients[i].room, DEFAULT_ROOM);
+
+                                const char *confirm = "[SERVER] Returned to default room '#general'.\n";
+                                send(sd, confirm, (int)strlen(confirm), 0);
+
+                                char joinNew[buffer_size];
+                                snprintf(joinNew, sizeof(joinNew), "[SERVER] %s joined room '#general'\n",
+                                         clients[i].username);
+                                broadcastToRoom(joinNew, DEFAULT_ROOM, sd);
+                            }
+                        }
+                        else if (strcmp(buffer, "/rooms") == 0 || strcmp(buffer, "/room") == 0)
+                        {
+                            listRoom(sd);
+                        }
+                        else if (strncmp(buffer, "/msg ", 5) == 0 || strncmp(buffer, "/msg", 4) == 0)
                         {
                             char targetUser[username_len];
                             char privateMsg[buffer_size];
@@ -268,13 +396,13 @@ int main(void)
                                 if (target_fd != INVALID_SOCKET)
                                 {
                                     printf("[PRIVATE] %s -> %s: %s\n", clients[i].username, targetUser, privateMsg);
+
                                     char toTarget[buffer_size];
-                                    snprintf(toTarget, sizeof(toTarget), "[PRIVATE] %s: %s\n", clients[i].username, privateMsg);
+                                    snprintf(toTarget, sizeof(toTarget), "[PRIVATE from %s]: %s\n", clients[i].username, privateMsg);
                                     send(target_fd, toTarget, (int)strlen(toTarget), 0);
 
-                                    // Confirmation to sender
                                     char toSender[buffer_size];
-                                    snprintf(toSender, sizeof(toSender), "[PRIVATE] To %s: %s\n", targetUser, privateMsg);
+                                    snprintf(toSender, sizeof(toSender), "[PRIVATE to %s]: %s\n", targetUser, privateMsg);
                                     send(sd, toSender, (int)strlen(toSender), 0);
                                 }
                                 else
@@ -290,29 +418,29 @@ int main(void)
                                 send(sd, err, (int)strlen(err), 0);
                             }
                         }
+                        
                         else
                         {
-                            printf("[CHAT] %s (FD %d): %s\n", clients[i].username, (int)sd, buffer);
+                            printf("[ROOM #%s] %s (FD %d): %s\n", clients[i].room, clients[i].username, (int)sd, buffer);
 
-                            // Broadcast chat message to ALL OTHER clients!
-                            char broadcast_msg[buffer_size];
-                            snprintf(broadcast_msg, sizeof(broadcast_msg), "[%s]: %s\n", clients[i].username, buffer);
-                            broadcast_message(broadcast_msg, sd);
+                            char rmsg[buffer_size];
+                            snprintf(rmsg, sizeof(rmsg), "[#%s | %s]: %s\n", clients[i].room, clients[i].username, buffer);
+                            broadcastToRoom(rmsg, clients[i].room, sd);
                         }
                     }
                 }
                 else
                 {
-                    // Client Disconnection Handling
+                    // Disconnect
                     if (clients[i].is_registered)
                     {
-                        printf("[DISCONNECT] User '%s' (FD %d) disconnected.\n", clients[i].username, (int)sd);
+                        printf("[DISCONNECT] User '%s' (FD %d) disconnected from room '#%s'.\n",
+                               clients[i].username, (int)sd, clients[i].room);
 
-                        // Broadcast leave notification to remaining users
                         char leave_notification[buffer_size];
                         snprintf(leave_notification, sizeof(leave_notification),
                                  "[SERVER] *** %s left the chat. ***\n", clients[i].username);
-                        broadcast_message(leave_notification, sd);
+                        broadcastToRoom(leave_notification, clients[i].room, sd);
                     }
                     else
                     {
@@ -323,12 +451,13 @@ int main(void)
                     clients[i].socket_fd = 0;
                     clients[i].is_registered = 0;
                     clients[i].username[0] = '\0';
+                    strcpy(clients[i].room, DEFAULT_ROOM);
                 }
             }
         }
     }
 
-    printf("[SHUTDOWN] Server closing...\n");
+    printf("Server closing...\n");
     close_socket(server_fd);
 
 #ifdef _WIN32
