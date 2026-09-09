@@ -1,4 +1,4 @@
-# 📡 Real-Time Multi-Client TCP Chat Application in C
+#  Socket chat is a Real-Time Multi-Client TCP Chat Application in C
 
 A production-grade, low-level real-time chat application built from scratch using **C** and **POSIX / Winsock TCP socket programming**. 
 
@@ -6,7 +6,7 @@ This project covers computer networking fundamentals—from kernel socket buffer
 
 ---
 
-## 🌟 Key Features
+##  Key Features
 
 - **🚀 I/O Multiplexing (`select()`)**: Handles up to 30 concurrent client connections on a single server thread without spawning expensive OS threads per client.
 - **📦 Custom Application Protocol**: Structured pipe-delimited message frames (`TYPE|FROM|TO|PAYLOAD`) for predictable, type-safe network parsing.
@@ -20,7 +20,7 @@ This project covers computer networking fundamentals—from kernel socket buffer
 
 ---
 
-## 📐 System Architecture
+##  System Architecture
 
 ### 1. High-Level Client-Server Architecture
 
@@ -86,7 +86,7 @@ TCP is a continuous byte-stream protocol. To prevent packet coalescing (sticky p
 
 ---
 
-## 🛠️ Project Directory Structure
+##  Project Directory Structure
 
 ```text
 tcp-chat-app/
@@ -102,7 +102,7 @@ tcp-chat-app/
 
 ---
 
-## 💻 Command Reference
+##  Command Reference
 
 Inside the client interactive prompt, the following commands are available:
 
@@ -183,7 +183,7 @@ gcc client/client.c -o client/client -lpthread
 
 ---
 
-## 📚 Deep Networking Concepts Learned
+##  Deep Networking Concepts Learned
 
 1. **OSI & TCP/IP Model**: Understanding how transport-layer TCP segments wrap application-layer data payload.
 2. **Byte Ordering**: Converting host integers (Little-Endian on x86) to Network Byte Order (Big-Endian) via `htons()` and `htonl()`.
@@ -194,5 +194,5 @@ gcc client/client.c -o client/client -lpthread
 
 ---
 
-## 📄 License
+##  License
 This project is developed for educational and systems programming research purposes. Open source under the MIT License.
