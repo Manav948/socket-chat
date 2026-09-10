@@ -1,40 +1,26 @@
-#  Socket chat is a Real-Time Multi-Client TCP Chat Application in C
+# C TCP Socket Chat Application
 
-A production-grade, low-level real-time chat application built from scratch using **C** and **POSIX / Winsock TCP socket programming**. 
-
-This project covers computer networking fundamentals—from kernel socket buffers and the TCP 3-way handshake up to application-layer protocol design, message framing, rate-limiting security, and multi-threaded client execution.
+A high-performance, non-blocking multi-client C socket chat application featuring a custom wire-framing protocol, multi-threaded client UI, dynamic room channels, private messaging, rate-limiting, and server logging.
 
 ---
 
-##  Key Features
-
-- **🚀 I/O Multiplexing (`select()`)**: Handles up to 30 concurrent client connections on a single server thread without spawning expensive OS threads per client.
-- **📦 Custom Application Protocol**: Structured pipe-delimited message frames (`TYPE|FROM|TO|PAYLOAD`) for predictable, type-safe network parsing.
-- **📏 Message Framing (Length-Prefixing)**: 4-byte big-endian length headers (`send_framed` / `recv_framed`) resolving **TCP Sticky Packets** and **Packet Fragmentation**.
-- **🏠 Room-Scoped Isolation (Channels)**: Join different rooms (`#general`, `#gaming`, `#coding`). Broadcast messages are isolated to users in the same channel.
-- **🔒 Private Messaging (`/msg`)**: Direct point-to-point messaging between users.
-- **⚡ Multi-Threaded CLI Client**: Asynchronous background receive thread (`CreateThread` / `pthread`) rendering incoming messages instantly while typing.
-- **🛡️ Security Guard & Rate Limiting**: Built-in rate limiter (max 5 msgs / 2 seconds) and input sanitization preventing header injection (`|`).
-- **📜 Server Observability & File Logging**: Persistent, timestamped event logging saved automatically to `server.log`.
-- **🛑 Graceful Shutdown (`SIGINT` Handler)**: Catches `Ctrl+C` signal to notify clients and cleanly close socket descriptors.
-
----
-
-##  System Architecture
-
-### 1. High-Level Client-Server Architecture
+## System Architecture
 
 ```text
                ┌─────────────────────────────────────────┐
                │            TCP CHAT SERVER              │
                │                                         │
                │   ┌─────────────────────────────────┐   │
-               │   │   select() I/O Multiplexing     │   │
+               │   │    select() I/O Multiplexer     │   │
                │   └────────────────┬────────────────┘   │
                │                    │                    │
                │   ┌────────────────┴────────────────┐   │
                │   │ Application Protocol Parser &   │   │
                │   │     Room Isolation Router       │   │
+               │   └────────────────┬────────────────┘   │
+               │                    │                    │
+               │   ┌────────────────┴────────────────┐   │
+               │   │ Rate Limiter & server.log Audit │   │
                │   └─────────────────────────────────┘   │
                └────────────┬──────────┬──────────┬──────┘
                             │          │          │
@@ -50,149 +36,121 @@ This project covers computer networking fundamentals—from kernel socket buffer
 
 ---
 
-### 2. Message Framing Architecture (Phase 9)
-
-TCP is a continuous byte-stream protocol. To prevent packet coalescing (sticky packets) and fragmentation, every message is prefixed with a **4-Byte Big-Endian Length Header**:
+## Client Architecture
 
 ```text
-┌───────────────────────────────────────┬─────────────────────────────────────────────────┐
-│  4-Byte Length Header (Network Order) │             Serialized Protocol Frame           │
-│  [ uint32_t payload_len ]             │      "TYPE | SENDER | TARGET | PAYLOAD"         │
-└───────────────────────────────────────┴─────────────────────────────────────────────────┘
-│ <─────────── 4 Bytes ───────────────> │ <────────────── payload_len Bytes ────────────> │
+   ┌──────────────────────────────────────────────────────────────┐
+   │                     CLIENT PROCESS                           │
+   │                                                              │
+   │   ┌────────────────────────┐    ┌────────────────────────┐   │
+   │   │      MAIN THREAD       │    │     ASYNC RX THREAD    │   │
+   │   │                        │    │                        │   │
+   │   │  • Reads stdin [YOU]:  │    │  • Listens on Socket   │   │
+   │   │  • Serializes Frame    │    │  • Reads 4-Byte Header │   │
+   │   │  • Sends to TCP Socket │    │  • Formats Chat Output │   │
+   │   └───────────┬────────────┘    └───────────▲────────────┘   │
+   └───────────────┼─────────────────────────────┼────────────────┘
+                   │                             │
+                   ▼                             │
+   ┌─────────────────────────────────────────────┴────────────────┐
+   │                     TCP WIRE TRANSPORT                       │
+   │           [ 4-Byte Length Header ] + [ Payload Frame ]       │
+   └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### 3. Client State Machine
+## Client-Server Workflow
 
 ```text
-[TCP Handshake Established]
-            │
-            ▼
-    State: Unregistered
-            │
-            ├─── User inputs Username
-            │    ├── [Invalid / Taken] ──> Prompt retry
-            │    └── [Valid] ───────────> Transition to Registered
-            ▼
-    State: Registered (#general)
-            │
-            ├─── /join <room> ──────────> Switch Room Channel
-            ├─── /msg <user> <text> ────> Private Message Router
-            ├─── <text message> ────────> Room Broadcast
-            └─── /quit ─────────────────> Graceful Disconnect
+┌──────────┐               ┌────────────┐               ┌──────────┐
+│  Client  │               │ TCP Socket │               │  Server  │
+└────┬─────┘               └─────┬──────┘               └────┬─────┘
+     │                           │                           │
+     │── Connect (IP:Port) ─────►│── 3-Way Handshake ───────►│
+     │                           │                           │
+     │── REGISTER|Manav ────────►│── send_framed() ─────────►│── Register Session
+     │                           │                           │── Audit server.log
+     │◄── SYSTEM|Welcome ────────│◄── send_framed() ─────────│
+     │                           │                           │
+     │── JOIN_ROOM|#dev ────────►│── send_framed() ─────────►│── Switch Channel
+     │◄── Joined #dev ───────────│◄── Broadcast ─────────────│
+     │                           │                           │
+     │── CHAT|#dev|Hello! ──────►│── send_framed() ─────────►│── Rate-Limit Check
+     │◄── Manav: Hello! ─────────│◄── Multi-cast Broadcast ──│
+     │                           │                           │
+     │── PRIVMSG|Rahul|Hey ─────►│── send_framed() ─────────►│── Lookup Target User
+     │                           │   (Target Rahul only) ────►│── Deliver PM
+     │                           │                           │
+     │── /quit ─────────────────►│── Close Socket ──────────►│── Disconnect & Cleanup
 ```
 
 ---
 
-##  Project Directory Structure
+## Wire Protocol Framing
+
+TCP is a streaming protocol without native frame boundaries. Every message uses a **4-byte Big-Endian Length-Prefix Header** followed by a pipe-delimited payload (`TYPE|SENDER|TARGET|PAYLOAD`).
 
 ```text
-tcp-chat-app/
-├── protocol.h            # Protocol headers, framing (send_framed/recv_framed), & serializer
-├── server/
-│   ├── server.c          # Multi-client TCP server (select(), rooms, logging, rate limiting)
-│   ├── server.exe        # Compiled server binary (Windows)
-│   └── server.log        # Timestamped server log file
-└── client/
-    ├── client.c          # Multi-threaded CLI chat client (CreateThread, local [YOU] prompt)
-    └── client.exe        # Compiled client binary (Windows)
+┌─────────────────────────────────────────────────────────────────────────┐
+│              Payload Length (4 Bytes - Big-Endian Header)               │
+├───────────────────┬───────────────────┬───────────────────┬─────────────┤
+│  TYPE (max 16B)   │ SENDER (max 32B)  │ TARGET (max 32B)  │ PAYLOAD     │
+│ ("CHAT", "PRIV")  │ ("Manav", etc.)   │ ("#dev", etc.)    │ (max 1024B) │
+└───────────────────┴───────────────────┴───────────────────┴─────────────┘
 ```
 
 ---
 
-##  Command Reference
+## Core Features
 
-Inside the client interactive prompt, the following commands are available:
+- **Non-Blocking I/O**: `select()` multiplexing manages multiple clients concurrently on a single master loop.
+- **Frame Demarcation**: 4-byte length prefix prevents TCP packet fragmentation and concatenation.
+- **Multi-Threaded Client**: Asynchronous receive thread ensures uninterrupted terminal UI (`[YOU]:`).
+- **Room Channels & Private DMs**: Multi-cast room channels (`/join`) and targeted private chats (`/msg`).
+- **Rate-Limiting Throttling**: Sliding window caps user message bursts to 5 messages per 2 seconds.
+- **Audit Logging**: Background file logging records server events and messages to `server.log`.
 
-| Command | Action | Example |
+---
+
+## Command Reference
+
+| Command | Description | Example |
 | :--- | :--- | :--- |
-| **`<message>`** | Broadcast message to all users in current room | `Hello everyone!` |
-| **`/join <room>`** | Switch active chat room / channel | `/join gaming` |
-| **`/leave`** | Return to default `#general` room | `/leave` |
-| **`/rooms`** | Display all active rooms & online user counts | `/rooms` |
-| **`/msg <user> <msg>`** | Send a private message to a specific user | `/msg Rahul Hey, secret!` |
-| **`/quit`** | Gracefully disconnect from server | `/quit` |
+| `/join <room>` | Switch or create chat room channel | `/join #dev` |
+| `/msg <user> <msg>` | Send private message to user | `/msg alice hello` |
+| `/rooms` | List active chat rooms | `/rooms` |
+| `/help` | Show supported commands | `/help` |
+| `/quit` | Disconnect cleanly | `/quit` |
 
 ---
 
-## 🛠️ Compilation & Execution Guide
+## Quick Start Guide
 
-### Prerequisites
-- **Compiler**: GCC (MinGW for Windows, or standard GCC for Linux/macOS)
-- **Library**: `ws2_32` (Windows Sockets 2)
+### 1. Compilation
 
-### 1. Compiling the Application
-
-#### Windows (MinGW PowerShell):
-```powershell
-# Compile Server
-gcc server/server.c -o server/server.exe -lws2_32
-
-# Compile Client
-gcc client/client.c -o client/client.exe -lws2_32
-```
-
-#### Linux / macOS (GCC POSIX):
+**Windows (MinGW):**
 ```bash
-# Compile Server
-gcc server/server.c -o server/server
+gcc -Wall -O2 server/server.c -o server/server.exe -lws2_32
+gcc -Wall -O2 client/client.c -o client/client.exe -lws2_32
+```
 
-# Compile Client
-gcc client/client.c -o client/client -lpthread
+**Linux / macOS (POSIX):**
+```bash
+gcc -Wall -O2 server/server.c -o server/server
+gcc -Wall -O2 client/client.c -o client/client -lpthread
 ```
 
 ---
 
-### 2. Running the Application
+### 2. Execution
 
-1. **Start the Server** (Terminal 1):
-   ```powershell
-   .\server\server.exe
-   ```
+**Start Server:**
+```bash
+./server/server.exe 8888
+```
 
-2. **Start Client 1 - "Manav"** (Terminal 2):
-   ```powershell
-   .\client\client.exe
-   ```
-   *Prompt*: Enter username: `Manav`
-
-3. **Start Client 2 - "Rahul"** (Terminal 3):
-   ```powershell
-   .\client\client.exe
-   ```
-   *Prompt*: Enter username: `Rahul`
-
----
-
-## 📋 Project Development Roadmap (All 12 Phases Completed)
-
-- [x] **Phase 1 — TCP Fundamentals**: Low-level socket APIs (`socket`, `bind`, `listen`, `accept`, `connect`, `close`).
-- [x] **Phase 2 — Two-Way Communication**: Stream socket data exchange, kernel ring buffers (`SO_SNDBUF`, `SO_RCVBUF`), string null-termination.
-- [x] **Phase 3 — Multi-Client Server**: Single-threaded non-blocking I/O multiplexing with `select()`.
-- [x] **Phase 4 — User Management**: Logical identity mapping (`Username` $\rightarrow$ `Socket FD`) and registration state machine.
-- [x] **Phase 5 — Broadcast Messaging**: Real-time group chat routing & multi-threaded client receive loop (`CreateThread`).
-- [x] **Phase 6 — Private Messaging**: Direct point-to-point user routing (`/msg <username> <message>`).
-- [x] **Phase 7 — Chat Rooms**: Isolated channel routing (`/join <room>`, `/leave`, `/rooms`).
-- [x] **Phase 8 — Custom Application Protocol**: Pipe-delimited wire frame structure (`TYPE|FROM|TO|PAYLOAD`) and custom parser.
-- [x] **Phase 9 — Message Framing**: 4-Byte big-endian length-prefix headers (`send_framed` / `recv_framed`) eliminating TCP sticky packets & packet fragmentation.
-- [x] **Phase 10 — Server Logging & Observability**: Persistent event logging to disk (`server.log`) with ISO timestamps and log levels.
-- [x] **Phase 11 — Reliability & Graceful Error Handling**: Graceful signal handling (`SIGINT` / `Ctrl+C`), resource cleanup, and fault recovery.
-- [x] **Phase 12 — Security & System Design**: Rate limiting guard (max 5 msgs / 2 seconds), input sanitization, and buffer overflow protection.
-
----
-
-##  Deep Networking Concepts Learned
-
-1. **OSI & TCP/IP Model**: Understanding how transport-layer TCP segments wrap application-layer data payload.
-2. **Byte Ordering**: Converting host integers (Little-Endian on x86) to Network Byte Order (Big-Endian) via `htons()` and `htonl()`.
-3. **Kernel Socket Buffers**: Interacting with OS kernel memory send (`SO_SNDBUF`) and receive (`SO_RCVBUF`) queues.
-4. **I/O Multiplexing**: How `select()` uses bitmasks (`fd_set`) to allow a single thread to sleep until activity occurs on ready file descriptors.
-5. **TCP Framing**: Why TCP does not preserve message boundaries and how length-prefix framing guarantees atomic application packet reads.
-6. **Rate Limiting & Security**: Protecting server memory and network bandwidth against denial-of-service (DoS) spam attacks.
-
----
-
-##  License
-This project is developed for educational and systems programming research purposes. Open source under the MIT License.
+**Start Client:**
+```bash
+./client/client.exe 127.0.0.1 8888
+```
