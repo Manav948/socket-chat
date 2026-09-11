@@ -6,7 +6,7 @@
 #include <time.h>
 #include <signal.h>
 #include <stdarg.h>
-#include "../protocol.h"
+#include "../include/protocol.h"
 
 #ifdef _WIN32
     #include <winsock2.h>

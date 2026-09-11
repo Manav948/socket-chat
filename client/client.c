@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../protocol.h"
+#include "../include/protocol.h"
 
 #ifdef _WIN32
     #include <winsock2.h>

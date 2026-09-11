@@ -1,0 +1,10 @@
+# Executables
+*.exe
+server/server
+client/client
+server.log
+
+# Logs & build artifacts
+*.log
+*.o
+*.obj
